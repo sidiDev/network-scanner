@@ -1,117 +1,68 @@
 import subprocess
 import re
 import datetime
-import json
+import platform
 
 def get_active_wifi_interface():
-    """Get the active WiFi interface name"""
+    """Get the active WiFi interface name based on OS type."""
     try:
-        output = subprocess.check_output(['networksetup', '-listallhardwareports']).decode()
-        wifi_info = re.findall(r'Hardware Port: Wi-Fi\nDevice: (.*?)\n', output)
-        return wifi_info[0] if wifi_info else 'en0'
-    except:
-        return 'en0'  # Default to en0 if we can't find it
+        if platform.system() == "Darwin":  # macOS
+            output = subprocess.check_output(['networksetup', '-listallhardwareports']).decode()
+            wifi_info = re.findall(r'Hardware Port: Wi-Fi\nDevice: (.*?)\n', output)
+            return wifi_info[0] if wifi_info else 'en0'
+        elif platform.system() == "Linux":
+            output = subprocess.check_output(['nmcli', '-t', '-f', 'DEVICE,TYPE', 'device', 'status']).decode()
+            wifi_info = [line.split(":")[0] for line in output.splitlines() if "wifi" in line]
+            return wifi_info[0] if wifi_info else 'wlan0'
+    except Exception as e:
+        print(f"Error finding Wi-Fi interface: {e}")
+        return 'en0'  # Default if not found
 
-def get_network_info():
-    """Get current network information"""
+def get_connected_devices(interface):
+    """Get a list of currently connected devices using arp-scan if available."""
     try:
-        interface = get_active_wifi_interface()
-        output = subprocess.check_output(['ipconfig', 'getifaddr', interface]).decode().strip()
-        return output
-    except:
-        return None
-
-def scan_network():
-    """
-    Enhanced network scanner for MacOS
-    """
-    print("Starting enhanced network scan...")
-    devices = []
-    
-    # Method 1: Use arp-scan (more thorough than regular arp)
-    try:
-        print("\nScanning using arp-scan...")
-        arp_output = subprocess.check_output(['sudo', 'arp', '-a']).decode()
-        devices_arp = re.findall(r'\((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-fA-F:]+)', arp_output)
+        # Prefer using arp-scan for live results if installed
+        try:
+            scan_output = subprocess.check_output(['sudo', 'arp-scan', '-l', '-I', interface]).decode()
+            devices = re.findall(r'(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F:]{17})', scan_output)
+            return devices
+        except FileNotFoundError:
+            print("arp-scan not found, falling back to arp command.")
         
-        for ip, mac in devices_arp:
-            try:
-                # Try to get hostname
-                hostname_output = subprocess.check_output(['host', ip]).decode()
-                hostname = re.search(r'domain name pointer (.+?)\.', hostname_output)
-                hostname = hostname.group(1) if hostname else "Unknown"
-            except:
-                hostname = "Unknown"
-            
-            devices.append({
-                'ip': ip,
-                'mac': mac,
-                'hostname': hostname,
-                'source': 'arp'
-            })
+        # Fall back to arp if arp-scan isn't installed
+        arp_output = subprocess.check_output(['arp', '-a', '-i', interface]).decode()
+        devices = re.findall(r'\((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-fA-F:]+)', arp_output)
+        return devices
     except Exception as e:
-        print(f"Error with arp scan: {e}")
-
-    # Method 2: Use networksetup to get additional information
-    try:
-        print("\nGetting additional network information...")
-        network_output = subprocess.check_output(['networksetup', '-listallhardwareports']).decode()
-        # Process and add any additional devices found
-    except Exception as e:
-        print(f"Error getting network info: {e}")
-
-    # Method 3: Use lsof to find active network connections
-    try:
-        print("\nChecking active network connections...")
-        lsof_output = subprocess.check_output(['sudo', 'lsof', '-i']).decode()
-        connections = re.findall(r'(\d+\.\d+\.\d+\.\d+)', lsof_output)
-        
-        for ip in connections:
-            if ip not in [d['ip'] for d in devices]:
-                try:
-                    hostname_output = subprocess.check_output(['host', ip]).decode()
-                    hostname = re.search(r'domain name pointer (.+?)\.', hostname_output)
-                    hostname = hostname.group(1) if hostname else "Unknown"
-                except:
-                    hostname = "Unknown"
-                
-                devices.append({
-                    'ip': ip,
-                    'mac': "Unknown",
-                    'hostname': hostname,
-                    'source': 'lsof'
-                })
-    except Exception as e:
-        print(f"Error checking connections: {e}")
-
-    return devices
+        print(f"Error scanning network: {e}")
+        return []
 
 if __name__ == "__main__":
-    print("Enhanced Network Scanner Started")
+    print("Real-Time Network Scanner Started")
     print(f"Time: {datetime.datetime.now()}")
     print("-" * 50)
-    
-    # Get current network info
-    my_ip = get_network_info()
-    if my_ip:
+
+    # Detect active network interface
+    interface = get_active_wifi_interface()
+    print(f"Using Wi-Fi Interface: {interface}")
+
+    # Get current IP address
+    try:
+        if platform.system() == "Darwin":
+            my_ip = subprocess.check_output(['ipconfig', 'getifaddr', interface]).decode().strip()
+        elif platform.system() == "Linux":
+            my_ip = subprocess.check_output(['hostname', '-I']).decode().split()[0]
         print(f"Your IP address: {my_ip}")
-    
-    devices = scan_network()
-    
-    print("\nScan Complete")
-    print(f"Found {len(devices)} devices")
+    except Exception as e:
+        print(f"Error fetching IP address: {e}")
+        my_ip = "Unknown"
+
+    # Scan network for connected devices
+    connected_devices = get_connected_devices(interface)
+    print(f"\nCurrently Connected Devices: {len(connected_devices)}")
     print("-" * 50)
-    
-    # Print results in a more readable format
-    for device in devices:
-        print(f"\nDevice Details:")
-        print(f"IP Address: {device['ip']}")
-        print(f"MAC Address: {device['mac']}")
-        print(f"Hostname: {device['hostname']}")
-        print(f"Detection Method: {device['source']}")
+
+    for ip, mac in connected_devices:
+        print(f"IP Address: {ip}")
+        print(f"MAC Address: {mac}")
         print("-" * 30)
-    
-    # Save results to a file
-    with open('network_scan_results.txt', 'w') as f:
-        json.dump(devices, f, indent=2)
-    print("\nResults have been saved to 'network_scan_results.txt'")
